@@ -32,19 +32,115 @@ class IfcData:
 
     @classmethod
     def __get_net_volume_from_element(cls, element):
+        """
+        Extract volume information from IFC element using different strategies.
+        
+        Args:
+            element: IFC element from which to extract volume.
+            
+        Returns:
+            Float value of volume if found, None otherwise.
+        """
+        # Check property sets (psets) for volume information
         psets = util_element.get_psets(element)
         for pset_name, pset in psets.items():
+            # Look for different volume representation names in psets
             if 'NetVolume' in pset:
                 return pset['NetVolume']
+            if 'Volume' in pset:
+                return pset['Volume']
+            if 'GrossVolume' in pset:
+                return pset['GrossVolume']
+            if 'TotalVolume' in pset:
+                return pset['TotalVolume']
+                
+        # Check quantities for volume information
+        quantities = util_element.get_quantities(element)
+        for quantity_name, quantity in quantities.items():
+            # Look for different volume representation names in quantities
+            if 'NetVolume' in quantity:
+                return quantity['NetVolume']
+            if 'Volume' in quantity:
+                return quantity['Volume']
+            if 'GrossVolume' in quantity:
+                return quantity['GrossVolume']
+            
+        # Try direct attribute access as a last resort
+        try:
+            if hasattr(element, 'Volume'):
+                return element.Volume
+        except:
+            pass
+            
         return None
+
+    @classmethod
+    def __get_material_name(cls, material):
+        """
+        Extract material name from various types of IFC material objects.
+        
+        Args:
+            material: IFC material object
+            
+        Returns:
+            String representing the material name.
+            
+        Raises:
+            AttributeError: If material name cannot be extracted.
+        """
+        # Handle direct material with Name attribute
+        if material.is_a('IfcMaterial'):
+            return material.Name
+            
+        # Handle IfcMaterialLayerSet
+        elif material.is_a('IfcMaterialLayerSet'):
+            if hasattr(material, 'LayerSetName') and material.LayerSetName:
+                return material.LayerSetName
+            # Fallback to first layer's material name
+            elif hasattr(material, 'MaterialLayers') and material.MaterialLayers:
+                layers = list(material.MaterialLayers)
+                if layers and hasattr(layers[0], 'Material') and layers[0].Material:
+                    return layers[0].Material.Name
+            raise AttributeError(f"Cannot extract name from {material.is_a()}")
+                
+        # Handle IfcMaterialLayerSetUsage
+        elif material.is_a('IfcMaterialLayerSetUsage'):
+            if hasattr(material, 'ForLayerSet') and material.ForLayerSet:
+                return cls.__get_material_name(material.ForLayerSet)
+            raise AttributeError(f"Cannot extract name from {material.is_a()}")
+                
+        # Handle IfcMaterialList
+        elif material.is_a('IfcMaterialList'):
+            if hasattr(material, 'Materials') and material.Materials:
+                materials = list(material.Materials)
+                if materials and hasattr(materials[0], 'Name'):
+                    return materials[0].Name
+            raise AttributeError(f"Cannot extract name from {material.is_a()}")
+                
+        # Handle IfcMaterialConstituentSet
+        elif material.is_a('IfcMaterialConstituentSet'):
+            if hasattr(material, 'Name') and material.Name:
+                return material.Name
+            elif hasattr(material, 'MaterialConstituents') and material.MaterialConstituents:
+                constituents = list(material.MaterialConstituents)
+                if constituents and hasattr(constituents[0], 'Material') and constituents[0].Material:
+                    return constituents[0].Material.Name
+            raise AttributeError(f"Cannot extract name from {material.is_a()}")
+                
+        # Fallback for any other material type
+        elif hasattr(material, 'Name'):
+            return material.Name
+            
+        # If no name could be found, throw an error
+        raise AttributeError(f"Material of type {material.is_a()} has no extractable name")
 
     @classmethod
     def __update_material_prices(cls, material: str):
         if material not in list(cls.material_prices['material']):
-            cls.material_prices = cls.material_prices._append({
-                'material': material,
-                'price': 0,
-            }, ignore_index=True)
+            cls.material_prices = pd.concat([
+                cls.material_prices,
+                pd.DataFrame([{'material': material, 'price': 0}])
+            ], ignore_index=True)
 
     @classmethod
     def update_material_price(cls, material: str, price: float):
@@ -53,19 +149,42 @@ class IfcData:
 
     @classmethod
     def __update_df(cls):
+        """
+        Update dataframe with elements, materials and volumes from the IFC model.
+        
+        This method processes all material associations in the IFC model,
+        extracts material names and element volumes, and updates the dataframe.
+        
+        Raises:
+            AssertionError: If IFC file is not loaded.
+        """
         assert cls.model is not None, 'IFC file not loaded'
         for associates_material in cls.model.by_type('IfcRelAssociatesMaterial'):
             material = associates_material.RelatingMaterial
-            for element in associates_material.RelatedObjects:
-                volume = cls.__get_net_volume_from_element(element)
-                if volume is None:
-                    continue
-                cls.df = cls.df._append({
-                    'element': element.is_a(),
-                    'material': material.Name,
-                    'volume': volume,
-                }, ignore_index=True)
-                cls.__update_material_prices(material.Name)
+            
+            try:
+                # Extract material name using robust helper method
+                material_name = cls.__get_material_name(material)
+                
+                for element in associates_material.RelatedObjects:
+                    volume = cls.__get_net_volume_from_element(element)
+                    if volume is None:
+                        continue
+                        
+                    cls.df = pd.concat([
+                        cls.df,
+                        pd.DataFrame([{
+                            'element': element.is_a(),
+                            'material': material_name,
+                            'volume': volume
+                        }])
+                    ], ignore_index=True)
+                    cls.__update_material_prices(material_name)
+                    
+            except AttributeError:
+                # Skip this material association if name cannot be extracted
+                # No print statements as per requirements - just skip and continue
+                continue
 
     @classmethod
     def get_material_costs(cls):
@@ -143,13 +262,59 @@ class IfcData:
         return material_costs['cost'].sum()
 
 if __name__ == '__main__':
-    print('test ifc_data.py')
-    ifc_data = IfcData()
-    ifc_data.load('example_file.ifc')
-    # print(ifc_data.get_element_costs())
-    # print(ifc_data.get_material_costs())
-    # IfcData.load('example_file.ifc')
-    # IfcData.update_material_price('Concrete', 10)
-    # print(IfcData.get_material_costs())
-    # print(ifc_data.get_element_costs())
+    print('=== IFC DATA PROCESSING TEST ===')
+    
+    # Test 1: Process problematic file 'AC20-Institute-Var-2.ifc'
+    print('\nTest 1: Processing problematic file AC20-Institute-Var-2.ifc')
+    try:
+        ifc_data = IfcData()
+        ifc_data.load('AC20-Institute-Var-2.ifc')
+        material_costs = ifc_data.get_material_costs()
+        element_costs = ifc_data.get_element_costs()
+        
+        print(f"Success! Processed AC20-Institute-Var-2.ifc")
+        print(f"Found {len(material_costs)} materials and {len(element_costs)} element types")
+        
+        if not material_costs.empty:
+            print(f"Sample materials: {material_costs['material'].head(3).tolist()}")
+            print(f"Total material volume: {material_costs['volume'].sum():.2f}")
+        
+    except Exception as e:
+        print(f"Error processing AC20-Institute-Var-2.ifc: {str(e)}")
+    
+    # Test 2: Process previously working file 'example_file.ifc'
+    print('\nTest 2: Processing previously working file example_file.ifc')
+    try:
+        ifc_data = IfcData()
+        ifc_data.load('example_file.ifc')
+        material_costs = ifc_data.get_material_costs()
+        element_costs = ifc_data.get_element_costs()
+        
+        print(f"Success! Processed example_file.ifc")
+        print(f"Found {len(material_costs)} materials and {len(element_costs)} element types")
+        
+        if not material_costs.empty:
+            print(f"Sample materials: {material_costs['material'].head(3).tolist()}")
+            print(f"Total material volume: {material_costs['volume'].sum():.2f}")
+        
+        # Test material price update functionality
+        if not material_costs.empty and len(material_costs) > 0:
+            test_material = material_costs['material'].iloc[0]
+            test_price = 100.0
+            print(f"\nTesting material price update for '{test_material}'")
+            
+            ifc_data.update_material_price(test_material, test_price)
+            updated_costs = ifc_data.get_material_costs()
+            updated_row = updated_costs[updated_costs['material'] == test_material]
+            
+            if not updated_row.empty:
+                print(f"Material: {test_material}")
+                print(f"Price: {updated_row['price'].iloc[0]}")
+                print(f"Volume: {updated_row['volume'].iloc[0]:.2f}")
+                print(f"Cost: {updated_row['cost'].iloc[0]:.2f}")
+        
+    except Exception as e:
+        print(f"Error processing example_file.ifc: {str(e)}")
+    
+    print('\n=== TEST COMPLETED ===')
 
