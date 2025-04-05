@@ -164,3 +164,6 @@ storage/
 
 # temp
 wczytywanie_obj_materiałów.txt
+
+# vscode
+.vscode/
