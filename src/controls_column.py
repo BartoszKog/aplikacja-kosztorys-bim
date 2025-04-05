@@ -156,8 +156,9 @@ class ControlsColumn(Container):
         current_table = self.body.get_control('left')
         if isinstance(current_table, Table):
             new_type = "element" if current_table.table.type == "material" else "material"
-            self.body.delete_content('left')
-            self.body.add_content(Table(new_type))
+            self.body.delete_content('left', auto_update=False)
+            self.body.add_content(Table(new_type), auto_update=False)
+            self.body.update()
             self.change_table_type_button.text = "Pokaż tabelę materiałów" if new_type == "element" else "Pokaż tabelę elementów"
             self.change_table_type_button.update()
             

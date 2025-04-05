@@ -14,7 +14,7 @@ class Body(Container):
         self.main_row = Row(expand=True)
         self.content = self.main_row
         
-    def add_content(self, content, side='left'):
+    def add_content(self, content, side='left', auto_update=True):
         if side == 'left':
             self.left_content.content = content
         elif side == 'right':
@@ -27,9 +27,10 @@ class Body(Container):
         if self.right_content.content:
             self.main_row.controls.append(self.right_content)
         
-        self.update()
+        if auto_update:
+            self.update()
         
-    def delete_content(self, side: str):
+    def delete_content(self, side: str, auto_update=True):
         if side not in ['left', 'right']:
             raise ValueError('side must be either "left" or "right"')
         
@@ -40,7 +41,8 @@ class Body(Container):
             container for container in [self.left_content, self.right_content] if container.content
         ]
         
-        self.update()
+        if auto_update:
+            self.update()
         
     def get_control(self, side: str):
         if side not in ['left', 'right']:
