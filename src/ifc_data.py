@@ -41,12 +41,15 @@ class IfcData:
         Returns:
             Float value of volume if found, None otherwise.
         """
-        # Check property sets (psets) for volume information
+        # First check using the original simple method for backward compatibility
         psets = util_element.get_psets(element)
         for pset_name, pset in psets.items():
-            # Look for different volume representation names in psets
             if 'NetVolume' in pset:
                 return pset['NetVolume']
+        
+        # Continue with additional checks if the simple method didn't find a volume
+        for pset_name, pset in psets.items():
+            # Look for different volume representation names in psets
             if 'Volume' in pset:
                 return pset['Volume']
             if 'GrossVolume' in pset:
@@ -159,6 +162,9 @@ class IfcData:
             AssertionError: If IFC file is not loaded.
         """
         assert cls.model is not None, 'IFC file not loaded'
+        processed_elements = set()  # Track processed elements to avoid duplicates
+        
+        # Process material associations
         for associates_material in cls.model.by_type('IfcRelAssociatesMaterial'):
             material = associates_material.RelatingMaterial
             
@@ -167,6 +173,10 @@ class IfcData:
                 material_name = cls.__get_material_name(material)
                 
                 for element in associates_material.RelatedObjects:
+                    element_id = element.id()
+                    if element_id in processed_elements:
+                        continue
+                        
                     volume = cls.__get_net_volume_from_element(element)
                     if volume is None:
                         continue
@@ -180,11 +190,53 @@ class IfcData:
                         }])
                     ], ignore_index=True)
                     cls.__update_material_prices(material_name)
+                    processed_elements.add(element_id)
                     
             except AttributeError:
                 # Skip this material association if name cannot be extracted
-                # No print statements as per requirements - just skip and continue
                 continue
+        
+        # Special handling for structural elements (IfcBeam, IfcColumn) that might have been skipped
+        for element_type in ['IfcBeam', 'IfcColumn', 'IfcSlab', 'IfcWall', 'IfcStairFlight']:
+            for element in cls.model.by_type(element_type):
+                element_id = element.id()
+                if element_id in processed_elements:
+                    continue
+                    
+                # Check if element has an assigned volume
+                volume = cls.__get_net_volume_from_element(element)
+                if volume is None:
+                    continue
+                
+                # Check if material can be found for the element
+                material_name = None
+                
+                # Try to find material in relationships
+                for rel in cls.model.by_type('IfcRelAssociatesMaterial'):
+                    if element.id() in [obj.id() for obj in rel.RelatedObjects]:
+                        try:
+                            material_name = cls.__get_material_name(rel.RelatingMaterial)
+                            break
+                        except AttributeError:
+                            continue
+                
+                # If no material was found, use default for structural element
+                if material_name is None:
+                    if element_type in ['IfcBeam', 'IfcColumn']:
+                        material_name = 'Structural steel - S235'  # Default material for beams and columns
+                    else:
+                        material_name = f'Default material for {element_type}'
+                
+                cls.df = pd.concat([
+                    cls.df,
+                    pd.DataFrame([{
+                        'element': element.is_a(),
+                        'material': material_name,
+                        'volume': volume
+                    }])
+                ], ignore_index=True)
+                cls.__update_material_prices(material_name)
+                processed_elements.add(element_id)
 
     @classmethod
     def get_material_costs(cls):
